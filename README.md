@@ -1,4 +1,4 @@
-# SanTra-AI Learning Platform
+# SmartEdu Learning Platform
 
 SanTra-AI is a full‑stack learning platform that combines classic e‑learning features with AI‑assisted tools. It provides separate experiences for **students** and **instructors**, including real‑time chat, course management, and AI‑powered exam and prediction utilities.
 
