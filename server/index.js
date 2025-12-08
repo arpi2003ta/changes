@@ -43,6 +43,19 @@ const io = new Server(server, {
 // Track connected users: userId -> Set<socketId>
 const userSocketMap = new Map();
 
+const emitToUser = (receiverId, event, payload) => {
+  const sockets = userSocketMap.get(receiverId);
+  if (!sockets) return;
+
+  if (sockets instanceof Set) {
+    sockets.forEach((socketId) => {
+      io.to(socketId).emit(event, payload);
+    });
+  } else {
+    io.to(sockets).emit(event, payload);
+  }
+};
+
 io.on("connection", (socket) => {
   console.log("New client connected:", socket.id);
 
@@ -86,17 +99,31 @@ io.on("connection", (socket) => {
   });
 
   socket.on("typing", ({ receiverId }) => {
-    const socketId = userSocketMap.get(receiverId);
-    if (socketId) {
-      io.to(socketId).emit("typing");
-    }
+    emitToUser(receiverId, "typing");
   });
 
   socket.on("stop typing", ({ receiverId }) => {
-    const socketId = userSocketMap.get(receiverId);
-    if (socketId) {
-      io.to(socketId).emit("stop typing");
-    }
+    emitToUser(receiverId, "stop typing");
+  });
+
+  socket.on("call:offer", ({ receiverId, from, chatId, sdp }) => {
+    if (!receiverId || !from || !chatId || !sdp) return;
+    emitToUser(receiverId, "call:offer", { from, chatId, sdp });
+  });
+
+  socket.on("call:answer", ({ receiverId, from, chatId, sdp }) => {
+    if (!receiverId || !from || !chatId || !sdp) return;
+    emitToUser(receiverId, "call:answer", { from, chatId, sdp });
+  });
+
+  socket.on("call:ice-candidate", ({ receiverId, from, chatId, candidate }) => {
+    if (!receiverId || !from || !chatId || !candidate) return;
+    emitToUser(receiverId, "call:ice-candidate", { from, chatId, candidate });
+  });
+
+  socket.on("call:end", ({ receiverId, from, chatId }) => {
+    if (!receiverId || !from || !chatId) return;
+    emitToUser(receiverId, "call:end", { from, chatId });
   });
 });
 

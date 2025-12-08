@@ -12,7 +12,11 @@ import {
   PaperClipOutlined,
   SmileOutlined,
   AudioOutlined,
+  PhoneOutlined,
+  PhoneFilled,
+  AudioMutedOutlined,
 } from "@ant-design/icons";
+
 import axios from "axios";
 import moment from "moment";
 import data from "@emoji-mart/data";
@@ -42,6 +46,15 @@ const Chat = ({ courseId, instructorId, triggerButton }) => {
   const { status, startRecording, stopRecording, mediaBlobUrl, clearBlobUrl } =
     useReactMediaRecorder({ audio: true });
   const { user } = useSelector((state) => state.auth);
+
+  const [isCalling, setIsCalling] = useState(false);
+  const [inCall, setInCall] = useState(false);
+  const [isMuted, setIsMuted] = useState(false);
+  const [incomingCall, setIncomingCall] = useState(null);
+  const peerRef = useRef(null);
+  const localStreamRef = useRef(null);
+  const remoteStreamRef = useRef(null);
+  const remoteAudioRef = useRef(null);
 
   const handleEmojiClick = (emoji) => {
     setInputMessage((prev) => prev + emoji.native);
@@ -182,6 +195,49 @@ const Chat = ({ courseId, instructorId, triggerButton }) => {
 
       newSocket.on("offline", (userId) => {
         setOnlineUsers((prev) => prev.filter((id) => id !== userId));
+      });
+
+      newSocket.on("call:offer", ({ from, chatId, sdp }) => {
+        setIncomingCall({ from, chatId, sdp });
+
+        const chat = chatsRef.current.find((c) => c._id === chatId);
+        if (chat && activeChatRef.current !== chatId) {
+          setActiveChat(chat);
+        }
+
+        setVisible(true);
+      });
+
+      newSocket.on("call:answer", async ({ from, chatId, sdp }) => {
+        if (!peerRef.current) return;
+        try {
+          await peerRef.current.setRemoteDescription(
+            new RTCSessionDescription(sdp)
+          );
+          setIsCalling(false);
+          setInCall(true);
+        } catch (error) {
+          console.error("Failed to handle call answer:", error);
+          cleanupCall();
+        }
+      });
+
+      newSocket.on(
+        "call:ice-candidate",
+        async ({ from, chatId, candidate }) => {
+          if (!peerRef.current || !candidate) return;
+          try {
+            await peerRef.current.addIceCandidate(
+              new RTCIceCandidate(candidate)
+            );
+          } catch (error) {
+            console.error("Failed to add ICE candidate:", error);
+          }
+        }
+      );
+
+      newSocket.on("call:end", ({ from, chatId }) => {
+        cleanupCall();
       });
 
       setSocket(newSocket);
@@ -559,6 +615,198 @@ const Chat = ({ courseId, instructorId, triggerButton }) => {
   const hasCourseChat =
     !!courseId && chats.some((c) => c.course && c.course._id === courseId);
 
+  const getOtherParticipant = (chat) => {
+    if (!chat) return null;
+    return user.role === "student" ? chat.instructor : chat.student;
+  };
+
+  const createPeerConnection = () => {
+    const pc = new RTCPeerConnection({
+      iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
+    });
+
+    pc.onicecandidate = (event) => {
+      if (!event.candidate || !socket) return;
+      const currentChatId = activeChatRef.current;
+      if (!currentChatId) return;
+      const chat = chatsRef.current.find((c) => c._id === currentChatId);
+      if (!chat) return;
+      const otherUser = getOtherParticipant(chat);
+      if (!otherUser) return;
+
+      socket.emit("call:ice-candidate", {
+        receiverId: otherUser._id,
+        from: user._id,
+        chatId: chat._id,
+        candidate: event.candidate,
+      });
+    };
+
+    pc.ontrack = (event) => {
+      const [remoteStream] = event.streams;
+      remoteStreamRef.current = remoteStream;
+      if (remoteAudioRef.current) {
+        remoteAudioRef.current.srcObject = remoteStream;
+      }
+    };
+
+    return pc;
+  };
+
+  const cleanupCall = () => {
+    setIsCalling(false);
+    setInCall(false);
+    setIsMuted(false);
+    setIncomingCall(null);
+
+    if (peerRef.current) {
+      try {
+        peerRef.current.onicecandidate = null;
+        peerRef.current.ontrack = null;
+        peerRef.current.close();
+      } catch (error) {
+        console.error("Error closing peer connection", error);
+      }
+      peerRef.current = null;
+    }
+
+    if (localStreamRef.current) {
+      localStreamRef.current.getTracks().forEach((track) => track.stop());
+      localStreamRef.current = null;
+    }
+
+    if (remoteStreamRef.current) {
+      remoteStreamRef.current.getTracks().forEach((track) => track.stop());
+      remoteStreamRef.current = null;
+    }
+
+    if (remoteAudioRef.current) {
+      remoteAudioRef.current.srcObject = null;
+    }
+  };
+
+  const startCall = async () => {
+    if (!socket || !activeChat) return;
+
+    try {
+      const otherUser = getOtherParticipant(activeChat);
+      if (!otherUser) return;
+
+      setIsCalling(true);
+      setInCall(false);
+      setIsMuted(false);
+
+      const localStream = await navigator.mediaDevices.getUserMedia({
+        audio: true,
+      });
+      localStreamRef.current = localStream;
+
+      const pc = createPeerConnection();
+      localStream.getTracks().forEach((track) => {
+        pc.addTrack(track, localStream);
+      });
+      peerRef.current = pc;
+
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+
+      socket.emit("call:offer", {
+        receiverId: otherUser._id,
+        from: user._id,
+        chatId: activeChat._id,
+        sdp: offer,
+      });
+    } catch (error) {
+      console.error("Failed to start call:", error);
+      cleanupCall();
+    }
+  };
+
+  const acceptCall = async () => {
+    if (!socket || !incomingCall) return;
+
+    try {
+      const { from, chatId, sdp } = incomingCall;
+      const chat =
+        chatsRef.current.find((c) => c._id === chatId) || activeChat;
+      if (!chat) return;
+
+      setIncomingCall(null);
+      setIsCalling(false);
+      setIsMuted(false);
+
+      const localStream = await navigator.mediaDevices.getUserMedia({
+        audio: true,
+      });
+      localStreamRef.current = localStream;
+
+      const pc = createPeerConnection();
+      localStream.getTracks().forEach((track) => {
+        pc.addTrack(track, localStream);
+      });
+      peerRef.current = pc;
+
+      await pc.setRemoteDescription(new RTCSessionDescription(sdp));
+      const answer = await pc.createAnswer();
+      await pc.setLocalDescription(answer);
+
+      socket.emit("call:answer", {
+        receiverId: from,
+        from: user._id,
+        chatId,
+        sdp: answer,
+      });
+
+      setInCall(true);
+    } catch (error) {
+      console.error("Failed to accept call:", error);
+      cleanupCall();
+    }
+  };
+
+  const declineCall = () => {
+    if (!incomingCall) return;
+    const { from, chatId } = incomingCall;
+    setIncomingCall(null);
+    if (socket) {
+      socket.emit("call:end", {
+        receiverId: from,
+        from: user._id,
+        chatId,
+      });
+    }
+    cleanupCall();
+  };
+
+  const endCall = () => {
+    const currentChatId =
+      activeChatRef.current || (incomingCall && incomingCall.chatId);
+    if (socket && currentChatId) {
+      const chat = chatsRef.current.find((c) => c._id === currentChatId);
+      if (chat) {
+        const otherUser = getOtherParticipant(chat);
+        if (otherUser) {
+          socket.emit("call:end", {
+            receiverId: otherUser._id,
+            from: user._id,
+            chatId: chat._id,
+          });
+        }
+      }
+    }
+    cleanupCall();
+  };
+
+  const toggleMute = () => {
+    const localStream = localStreamRef.current;
+    if (!localStream) return;
+    const nextMuted = !isMuted;
+    localStream.getAudioTracks().forEach((track) => {
+      track.enabled = !nextMuted;
+    });
+    setIsMuted(nextMuted);
+  };
+
   return (
     <>
       {triggerButton ? (
@@ -646,7 +894,23 @@ const Chat = ({ courseId, instructorId, triggerButton }) => {
               </span>
             )}
             {activeChat && (
-              <div style={{ marginLeft: "auto" }}>
+              <div
+                style={{
+                  marginLeft: "auto",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 8,
+                }}
+              >
+                <Button
+                  type="primary"
+                  icon={<PhoneOutlined />}
+                  onClick={startCall}
+                  disabled={!isOnline || !socket || isCalling || inCall}
+                  style={{ marginRight: 8 }}
+                >
+                  {isCalling ? "Calling..." : "Call"}
+                </Button>
                 <Button type="text" danger onClick={handleDeleteChat}>
                   Delete Chat
                 </Button>
@@ -655,7 +919,10 @@ const Chat = ({ courseId, instructorId, triggerButton }) => {
           </div>
         }
         open={visible}
-        onCancel={() => setVisible(false)}
+        onCancel={() => {
+          setVisible(false);
+          cleanupCall();
+        }}
         footer={null}
         width={isMobileView ? "90%" : 800}
         styles={{ body: { padding: 0 } }}
@@ -803,6 +1070,90 @@ const Chat = ({ courseId, instructorId, triggerButton }) => {
             >
               {activeChat ? (
                 <>
+                  <audio
+                    ref={remoteAudioRef}
+                    autoPlay
+                    style={{ display: "none" }}
+                  />
+
+                  {incomingCall && !inCall && !isCalling && (
+                    <div
+                      style={{
+                        padding: "8px 16px",
+                        borderBottom: "1px solid #ecf0f1",
+                        backgroundColor: "#fff7e6",
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "space-between",
+                        gap: 8,
+                      }}
+                    >
+                      <span
+                        style={{ fontSize: 12, color: "#7f8c8d" }}
+                      >
+                        Incoming call...
+                      </span>
+                      <div style={{ display: "flex", gap: 8 }}>
+                        <Button
+                          type="primary"
+                          size="small"
+                          icon={<PhoneFilled />}
+                          onClick={acceptCall}
+                        >
+                          Accept
+                        </Button>
+                        <Button
+                          danger
+                          size="small"
+                          icon={<CloseOutlined />}
+                          onClick={declineCall}
+                        >
+                          Decline
+                        </Button>
+                      </div>
+                    </div>
+                  )}
+
+                  {(inCall || isCalling) && (
+                    <div
+                      style={{
+                        padding: "8px 16px",
+                        borderBottom: "1px solid #ecf0f1",
+                        backgroundColor: "#e8f4fd",
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "space-between",
+                        gap: 8,
+                      }}
+                    >
+                      <span
+                        style={{ fontSize: 12, color: "#2c3e50" }}
+                      >
+                        {isCalling ? "Calling..." : "In call"}
+                      </span>
+                      <div style={{ display: "flex", gap: 8 }}>
+                        <Button
+                          size="small"
+                          icon={
+                            isMuted ? <AudioMutedOutlined /> : <AudioOutlined />
+                          }
+                          onClick={toggleMute}
+                          disabled={!inCall}
+                        >
+                          {isMuted ? "Unmute" : "Mute"}
+                        </Button>
+                        <Button
+                          size="small"
+                          danger
+                          icon={<CloseOutlined />}
+                          onClick={endCall}
+                        >
+                          End
+                        </Button>
+                      </div>
+                    </div>
+                  )}
+
                   <div
                     style={{
                       flex: 1,
