@@ -15,6 +15,7 @@ import {
   PhoneOutlined,
   PhoneFilled,
   AudioMutedOutlined,
+  VideoCameraOutlined,
 } from "@ant-design/icons";
 
 import axios from "axios";
@@ -51,6 +52,7 @@ const Chat = ({ courseId, instructorId, triggerButton }) => {
   const [inCall, setInCall] = useState(false);
   const [isMuted, setIsMuted] = useState(false);
   const [incomingCall, setIncomingCall] = useState(null);
+  const [isVideoPanelOpen, setIsVideoPanelOpen] = useState(false);
   const peerRef = useRef(null);
   const localStreamRef = useRef(null);
   const remoteStreamRef = useRef(null);
@@ -658,6 +660,7 @@ const Chat = ({ courseId, instructorId, triggerButton }) => {
     setInCall(false);
     setIsMuted(false);
     setIncomingCall(null);
+    setIsVideoPanelOpen(false);
 
     if (peerRef.current) {
       try {
@@ -903,6 +906,13 @@ const Chat = ({ courseId, instructorId, triggerButton }) => {
                 }}
               >
                 <Button
+                  icon={<VideoCameraOutlined />}
+                  onClick={() => setIsVideoPanelOpen((prev) => !prev)}
+                  disabled={!isOnline}
+                >
+                  {isVideoPanelOpen ? "Hide Video" : "Video"}
+                </Button>
+                <Button
                   type="primary"
                   icon={<PhoneOutlined />}
                   onClick={startCall}
@@ -1075,6 +1085,84 @@ const Chat = ({ courseId, instructorId, triggerButton }) => {
                     autoPlay
                     style={{ display: "none" }}
                   />
+
+                  {isVideoPanelOpen && (
+                    <div
+                      style={{
+                        padding: "8px 16px 0",
+                        borderBottom: "1px solid #ecf0f1",
+                        backgroundColor: "#fdfdfd",
+                      }}
+                    >
+                      <div
+                        style={{
+                          display: "flex",
+                          gap: 12,
+                          marginBottom: 8,
+                          flexWrap: "wrap",
+                        }}
+                      >
+                        <div
+                          style={{
+                            flex: "1 1 160px",
+                            minHeight: 120,
+                            borderRadius: 8,
+                            background:
+                              "radial-gradient(circle at top left, #e3f2fd, #bbdefb)",
+                            display: "flex",
+                            alignItems: "center",
+                            justifyContent: "center",
+                            color: "#1f2933",
+                            fontSize: 12,
+                            fontWeight: 500,
+                          }}
+                        >
+                          Your video
+                        </div>
+                        <div
+                          style={{
+                            flex: "1 1 160px",
+                            minHeight: 120,
+                            borderRadius: 8,
+                            background:
+                              "radial-gradient(circle at bottom right, #ffe0b2, #ffcc80)",
+                            display: "flex",
+                            alignItems: "center",
+                            justifyContent: "center",
+                            color: "#4b1f00",
+                            fontSize: 12,
+                            fontWeight: 500,
+                          }}
+                        >
+                          Participant video
+                        </div>
+                      </div>
+                      <div
+                        style={{
+                          display: "flex",
+                          justifyContent: "flex-end",
+                          gap: 8,
+                          paddingBottom: 8,
+                        }}
+                      >
+                        <Button
+                          size="small"
+                          icon={<AudioMutedOutlined />}
+                          disabled
+                        >
+                          Mute
+                        </Button>
+                        <Button
+                          size="small"
+                          danger
+                          icon={<CloseOutlined />}
+                          onClick={() => setIsVideoPanelOpen(false)}
+                        >
+                          End
+                        </Button>
+                      </div>
+                    </div>
+                  )}
 
                   {incomingCall && !inCall && !isCalling && (
                     <div
