@@ -76,8 +76,9 @@ export const aiSearchCourses = async (req, res) => {
 // Build MongoDB aggregation pipeline for initial search
 const buildSearchPipeline = (query, filters) => {
     const pipeline = [];
+    const normalizedQuery = query && query.trim();
 
-    // Match only published courses
+    // Match only published courses and apply basic filters
     const matchStage = {
         isPublished: true
     };
@@ -153,6 +154,15 @@ const buildSearchPipeline = (query, filters) => {
             lectureCount: { $size: { $ifNull: ['$lectures', []] } }
         }
     });
+
+    // Apply text filter using the aggregated searchableText field
+    if (normalizedQuery) {
+        pipeline.push({
+            $match: {
+                searchableText: { $regex: normalizedQuery, $options: 'i' }
+            }
+        });
+    }
 
     return pipeline;
 };

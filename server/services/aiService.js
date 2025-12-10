@@ -322,8 +322,79 @@ Please provide a structured JSON response with the following format (respond ONL
         }
     }
 };
+const computeLocalCourseScores = (courses, query) => {
+    const normalizedQuery = (query || '').toLowerCase().trim();
+    const terms = normalizedQuery ? normalizedQuery.split(/\s+/).filter(Boolean) : [];
+
+    const scoredCourses = courses.map(course => {
+        const textParts = [
+            course.courseTitle,
+            course.subTitle,
+            course.description,
+            course.category,
+            course.courseLevel,
+            course.creator?.name,
+            course.searchableText,
+        ].filter(Boolean);
+
+        const fullText = textParts.join(' ').toLowerCase();
+
+        let matchCount = 0;
+        const matchedTerms = [];
+        for (const term of terms) {
+            if (fullText.includes(term)) {
+                matchCount++;
+                matchedTerms.push(term);
+            }
+        }
+
+        const aiScore = terms.length > 0 ? matchCount / terms.length : 0;
+        const relevancePercentage = Math.round(aiScore * 100);
+
+        return {
+            ...course,
+            aiScore,
+            relevancePercentage,
+            matchedTerms: Array.from(new Set(matchedTerms)),
+        };
+    });
+
+    const bestCourse = scoredCourses.reduce((best, curr) => {
+        if (!best) return curr;
+        return (curr.aiScore || 0) > (best.aiScore || 0) ? curr : best;
+    }, null);
+
+    const insights = {
+        summary: bestCourse && bestCourse.courseTitle
+            ? `Top results focus on "${normalizedQuery}" in courses like "${bestCourse.courseTitle}".`
+            : (normalizedQuery ? `Results related to "${normalizedQuery}".` : 'Showing available courses.'),
+        suggestions: [
+            'Try adding more specific keywords if results feel broad.',
+            'Use filters (category, price) to narrow down the course list.',
+        ],
+    };
+
+    const suggestions = Array.from(new Set(
+        scoredCourses
+            .map(c => c.category)
+            .filter(Boolean)
+    ));
+
+    return {
+        scoredCourses,
+        insights,
+        suggestions,
+    };
+};
 
 export const scoreCoursesWithGemini = async (courses, query) => {
+    const localResult = computeLocalCourseScores(courses, query);
+
+    // If no API key is configured, fall back to local scoring only
+    if (!GEMINI_API_KEY) {
+        return localResult;
+    }
+
     try {
         const courseData = courses.map(course => ({
             _id: course._id,
@@ -373,16 +444,50 @@ Ensure the aiScore and relevancePercentage are calculated accurately based on ho
                     topK: 40,
                     topP: 0.95,
                     maxOutputTokens: 2048,
-                }
+                    responseMimeType: 'application/json',
+                    responseJsonSchema: {
+                        type: 'object',
+                        properties: {
+                            scoredCourses: {
+                                type: 'array',
+                                items: {
+                                    type: 'object',
+                                    properties: {
+                                        _id: { type: 'string' },
+                                        aiScore: { type: 'number' },
+                                        relevancePercentage: { type: 'integer' },
+                                    },
+                                    required: ['_id', 'aiScore', 'relevancePercentage'],
+                                },
+                            },
+                            insights: {
+                                type: 'object',
+                                properties: {
+                                    summary: { type: 'string' },
+                                    suggestions: {
+                                        type: 'array',
+                                        items: { type: 'string' },
+                                    },
+                                },
+                                required: ['summary', 'suggestions'],
+                            },
+                            suggestions: {
+                                type: 'array',
+                                items: { type: 'string' },
+                            },
+                        },
+                        required: ['scoredCourses', 'insights', 'suggestions'],
+                    },
+                },
             },
             {
                 headers: {
-                    'Content-Type': 'application/json'
-                }
+                    'Content-Type': 'application/json',
+                },
             }
         );
 
-        let generatedText = response.data.candidates[0].content.parts[0].text;
+        let generatedText = response.data.candidates[0].content.parts[0].text || '';
         if (generatedText.startsWith('```json')) {
             generatedText = generatedText.replace(/```json\n?/g, '').replace(/```\n?/g, '');
         } else if (generatedText.startsWith('```')) {
@@ -395,32 +500,37 @@ Ensure the aiScore and relevancePercentage are calculated accurately based on ho
             generatedText = generatedText.slice(jsonStartScore, jsonEndScore + 1);
         }
 
-        const { scoredCourses: geminiScoredCourses, insights, suggestions } = JSON.parse(generatedText);
+        let parsed;
+        try {
+            parsed = JSON.parse(generatedText);
+        } catch (parseError) {
+            console.warn('Gemini search JSON parse failed, using local scoring:', parseError.message);
+            return localResult;
+        }
 
-        const finalScoredCourses = courses.map(course => {
-            const geminiScore = geminiScoredCourses.find(gsc => gsc._id === course._id.toString());
+        const { scoredCourses: geminiScoredCourses, insights, suggestions } = parsed || {};
+
+        const finalScoredCourses = localResult.scoredCourses.map(course => {
+            const geminiScore = Array.isArray(geminiScoredCourses)
+                ? geminiScoredCourses.find(gsc => gsc._id === course._id.toString())
+                : null;
             return {
                 ...course,
-                aiScore: geminiScore ? geminiScore.aiScore : 0,
-                relevancePercentage: geminiScore ? geminiScore.relevancePercentage : 0,
+                aiScore: geminiScore && typeof geminiScore.aiScore === 'number' ? geminiScore.aiScore : course.aiScore,
+                relevancePercentage: geminiScore && typeof geminiScore.relevancePercentage === 'number'
+                    ? geminiScore.relevancePercentage
+                    : course.relevancePercentage,
             };
         });
 
-        return { scoredCourses: finalScoredCourses, insights, suggestions };
+        return {
+            scoredCourses: finalScoredCourses,
+            insights: insights || localResult.insights,
+            suggestions: suggestions || localResult.suggestions,
+        };
 
     } catch (error) {
-        console.error('Gemini Search Scoring Error:', error.response?.data || error.message);
-        return {
-            scoredCourses: courses.map(course => ({
-                ...course,
-                aiScore: 0,
-                relevancePercentage: 0,
-            })),
-            insights: {
-                summary: "Failed to generate AI insights and suggestions.",
-                suggestions: ["Try refining your search query.", "Check network connection."]
-            },
-            suggestions: []
-        };
+        console.error('Gemini Search Scoring API Error:', error.response?.data || error.message);
+        return localResult;
     }
 };
