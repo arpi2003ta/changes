@@ -82,7 +82,7 @@ const appRouter = createBrowserRouter([
         ),
       },
       {
-        path:"AIExaminer-Result",
+        path: "ai-examiner/result/:submissionId",
         element: (
           <ProtectedRoute>
             <AIExaminerResult/>

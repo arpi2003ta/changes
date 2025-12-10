@@ -11,14 +11,14 @@ import mediaRoute from "./routes/media.route.js";
 import purchaseRoute from "./routes/purchaseCourse.route.js";
 import courseProgressRoute from "./routes/courseProgress.route.js";
 import chatRoute from "./routes/chat.route.js";
-import { stripeWebhook } from "./controllers/coursePurchase.controller.js"; 
+import { stripeWebhook } from "./controllers/coursePurchase.controller.js";
 import questionRoute from "./routes/question.route.js";
 import responseRoutes from "./routes/response.route.js";
-import resultRoute from './routes/result.route.js';
-import examinerRoute from './routes/examiner.route.js'
+import resultRoute from "./routes/result.route.js";
+import examinerRoute from "./routes/examiner.route.js";
 import roadmapRoute from "./routes/roadmap.route.js";
 import searchRoute from "./routes/search.route.js";
-import predictorRoute from "./routes/predictor.route.js"
+import predictorRoute from "./routes/predictor.route.js";
 dotenv.config();
 
 // Database connection
@@ -106,9 +106,9 @@ io.on("connection", (socket) => {
     emitToUser(receiverId, "stop typing");
   });
 
-  socket.on("call:offer", ({ receiverId, from, chatId, sdp }) => {
+  socket.on("call:offer", ({ receiverId, from, chatId, sdp, type }) => {
     if (!receiverId || !from || !chatId || !sdp) return;
-    emitToUser(receiverId, "call:offer", { from, chatId, sdp });
+    emitToUser(receiverId, "call:offer", { from, chatId, sdp, type });
   });
 
   socket.on("call:answer", ({ receiverId, from, chatId, sdp }) => {
@@ -153,10 +153,10 @@ app.use("/api/v1/course", courseRoute);
 app.use("/api/v1/purchase", purchaseRoute);
 app.use("/api/v1/progress", courseProgressRoute);
 app.use("/api/v1/chat", chatRoute);
-app.use("/api/v1/questions",questionRoute);
-app.use("/api/v1/exam",responseRoutes);
+app.use("/api/v1/questions", questionRoute);
+app.use("/api/v1/exam", responseRoutes);
 app.use("/api/v1/result", resultRoute);
-app.use("/api/v1/examiner",examinerRoute);
+app.use("/api/v1/examiner", examinerRoute);
 app.use("/api/v1/roadmap", roadmapRoute);
 app.use("/api/v1/search", searchRoute);
 app.use("/api/v1/predict", predictorRoute);

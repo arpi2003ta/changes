@@ -1,19 +1,10 @@
 import React, { useEffect, useState } from "react";
-import {
-  Card,
-  CardHeader,
-  CardTitle,
-  CardDescription,
-  CardContent,
-  CardFooter,
-} from "@/components/ui/card";
+import { Card, CardContent, CardFooter } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
-import { Textarea } from "@/components/ui/textarea";
 import { toast } from "sonner";
-import { Link, Navigate } from "react-router-dom";
-import { Download } from "lucide-react"
+import { Link } from "react-router-dom";
 import DownloadButton from "@/components/ui/downloadButton";
 import { useNavigate } from 'react-router-dom';
 import apiClient from "@/api/axios";
@@ -22,12 +13,11 @@ const AIExaminer = () => {
   const navigate = useNavigate();
 
   const [omrFile, setOmrFile] = useState(null);
-  const [loading, setLoading] = useState(false);
+  const [loading] = useState(false);
   const [uploaded, setUploaded] = useState(false);
   const [examData, setExamData] = useState(null); 
-  // const [submit, setSubmit]= useState(false); 
 
-   const getDownloadUrl = (url) => {
+  const getDownloadUrl = (url) => {
     if (!url) return "#";
     return url.replace('/upload/', '/upload/fl_attachment/');
   };
@@ -65,7 +55,10 @@ const AIExaminer = () => {
       const response = await apiClient.post("/examiner/exam/submitOmr", formData);
       if(response.data.success){
         toast.success(response.data.message);
-          navigate(`/AIExaminer-Result`);
+        const submissionId = response.data?.submission?._id;
+        if(submissionId){
+          navigate(`/ai-examiner/result/${submissionId}`);
+        }
       }
     }catch(err){
       toast.error(err.response?.data?.message || "failed to submit exman")
