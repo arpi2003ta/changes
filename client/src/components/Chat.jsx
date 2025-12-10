@@ -53,10 +53,20 @@ const Chat = ({ courseId, instructorId, triggerButton }) => {
   const [isMuted, setIsMuted] = useState(false);
   const [incomingCall, setIncomingCall] = useState(null);
   const [isVideoPanelOpen, setIsVideoPanelOpen] = useState(false);
+  const [iceConnectionState, setIceConnectionState] = useState(null);
+  const [callType, setCallType] = useState(null); // 'audio' | 'video' | null
+  const [remoteAudioLevel, setRemoteAudioLevel] = useState(0);
+
   const peerRef = useRef(null);
   const localStreamRef = useRef(null);
   const remoteStreamRef = useRef(null);
   const remoteAudioRef = useRef(null);
+  const localVideoRef = useRef(null);
+  const remoteVideoRef = useRef(null);
+  const audioContextRef = useRef(null);
+  const audioSourceRef = useRef(null);
+  const audioAnalyserRef = useRef(null);
+  const audioDebugRafRef = useRef(null);
 
   const handleEmojiClick = (emoji) => {
     setInputMessage((prev) => prev + emoji.native);
@@ -74,6 +84,23 @@ const Chat = ({ courseId, instructorId, triggerButton }) => {
     (import.meta.env.VITE_API_URL
       ? import.meta.env.VITE_API_URL.replace(/\/api\/v1$/, "")
       : "http://localhost:8080");
+
+  const ICE_SERVERS = (() => {
+    const config = import.meta.env.VITE_ICE_SERVERS;
+    if (!config) {
+      return [{ urls: "stun:stun.l.google.com:19302" }];
+    }
+    try {
+      const parsed = JSON.parse(config);
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        return parsed;
+      }
+      return [{ urls: "stun:stun.l.google.com:19302" }];
+    } catch (error) {
+      console.error("Failed to parse VITE_ICE_SERVERS:", error);
+      return [{ urls: "stun:stun.l.google.com:19302" }];
+    }
+  })();
 
   // Check for mobile view
   useEffect(() => {
@@ -199,8 +226,8 @@ const Chat = ({ courseId, instructorId, triggerButton }) => {
         setOnlineUsers((prev) => prev.filter((id) => id !== userId));
       });
 
-      newSocket.on("call:offer", ({ from, chatId, sdp }) => {
-        setIncomingCall({ from, chatId, sdp });
+      newSocket.on("call:offer", ({ from, chatId, sdp, type }) => {
+        setIncomingCall({ from, chatId, sdp, type });
 
         const chat = chatsRef.current.find((c) => c._id === chatId);
         if (chat && activeChatRef.current !== chatId) {
@@ -624,11 +651,12 @@ const Chat = ({ courseId, instructorId, triggerButton }) => {
 
   const createPeerConnection = () => {
     const pc = new RTCPeerConnection({
-      iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
+      iceServers: ICE_SERVERS,
     });
 
     pc.onicecandidate = (event) => {
       if (!event.candidate || !socket) return;
+
       const currentChatId = activeChatRef.current;
       if (!currentChatId) return;
       const chat = chatsRef.current.find((c) => c._id === currentChatId);
@@ -650,9 +678,96 @@ const Chat = ({ courseId, instructorId, triggerButton }) => {
       if (remoteAudioRef.current) {
         remoteAudioRef.current.srcObject = remoteStream;
       }
+      if (remoteVideoRef.current) {
+        remoteVideoRef.current.srcObject = remoteStream;
+      }
+      startRemoteAudioDebug(remoteStream);
+    };
+
+    pc.oniceconnectionstatechange = () => {
+      const state = pc.iceConnectionState;
+      setIceConnectionState(state);
+
+      if (state === "failed" || state === "closed") {
+        if (peerRef.current === pc) {
+          console.error("ICE connection state:", state);
+          cleanupCall();
+        }
+      }
     };
 
     return pc;
+  };
+
+  const startRemoteAudioDebug = (stream) => {
+    if (!stream || audioContextRef.current) return;
+
+    try {
+      const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+      if (!AudioContextClass) return;
+
+      const context = new AudioContextClass();
+      const source = context.createMediaStreamSource(stream);
+      const analyser = context.createAnalyser();
+      analyser.fftSize = 512;
+      source.connect(analyser);
+
+      audioContextRef.current = context;
+      audioSourceRef.current = source;
+      audioAnalyserRef.current = analyser;
+
+      const dataArray = new Uint8Array(analyser.frequencyBinCount);
+
+      const update = () => {
+        if (!audioAnalyserRef.current) return;
+        analyser.getByteTimeDomainData(dataArray);
+        let sum = 0;
+        for (let i = 0; i < dataArray.length; i += 1) {
+          const value = dataArray[i] - 128;
+          sum += value * value;
+        }
+        const rms = Math.sqrt(sum / dataArray.length);
+        const level = Math.min(1, rms / 50);
+        setRemoteAudioLevel(level);
+        audioDebugRafRef.current = requestAnimationFrame(update);
+      };
+
+      update();
+    } catch (error) {
+      console.error("Failed to setup audio debug:", error);
+    }
+  };
+
+  const stopRemoteAudioDebug = () => {
+    if (audioDebugRafRef.current) {
+      cancelAnimationFrame(audioDebugRafRef.current);
+      audioDebugRafRef.current = null;
+    }
+
+    if (audioSourceRef.current) {
+      try {
+        audioSourceRef.current.disconnect();
+      } catch (error) {
+        console.error("Failed to disconnect audio source", error);
+      }
+      audioSourceRef.current = null;
+    }
+
+    if (audioAnalyserRef.current) {
+      try {
+        audioAnalyserRef.current.disconnect();
+      } catch (error) {
+        console.error("Failed to disconnect audio analyser", error);
+      }
+      audioAnalyserRef.current = null;
+    }
+
+    if (audioContextRef.current) {
+      audioContextRef.current.close();
+      audioContextRef.current = null;
+    }
+
+    setRemoteAudioLevel(0);
   };
 
   const cleanupCall = () => {
@@ -661,6 +776,9 @@ const Chat = ({ courseId, instructorId, triggerButton }) => {
     setIsMuted(false);
     setIncomingCall(null);
     setIsVideoPanelOpen(false);
+    setIceConnectionState(null);
+    setCallType(null);
+    stopRemoteAudioDebug();
 
     if (peerRef.current) {
       try {
@@ -686,9 +804,17 @@ const Chat = ({ courseId, instructorId, triggerButton }) => {
     if (remoteAudioRef.current) {
       remoteAudioRef.current.srcObject = null;
     }
+
+    if (localVideoRef.current) {
+      localVideoRef.current.srcObject = null;
+    }
+
+    if (remoteVideoRef.current) {
+      remoteVideoRef.current.srcObject = null;
+    }
   };
 
-  const startCall = async () => {
+  const startAudioCall = async () => {
     if (!socket || !activeChat) return;
 
     try {
@@ -698,6 +824,8 @@ const Chat = ({ courseId, instructorId, triggerButton }) => {
       setIsCalling(true);
       setInCall(false);
       setIsMuted(false);
+      setCallType("audio");
+      setIsVideoPanelOpen(false);
 
       const localStream = await navigator.mediaDevices.getUserMedia({
         audio: true,
@@ -718,6 +846,52 @@ const Chat = ({ courseId, instructorId, triggerButton }) => {
         from: user._id,
         chatId: activeChat._id,
         sdp: offer,
+        type: "audio",
+      });
+    } catch (error) {
+      console.error("Failed to start audio call:", error);
+      cleanupCall();
+    }
+  };
+
+  const startCall = async () => {
+    if (!socket || !activeChat) return;
+
+    try {
+      const otherUser = getOtherParticipant(activeChat);
+      if (!otherUser) return;
+
+      setIsCalling(true);
+      setInCall(false);
+      setIsMuted(false);
+      setCallType("video");
+      setIsVideoPanelOpen(true);
+
+      const localStream = await navigator.mediaDevices.getUserMedia({
+        audio: true,
+        video: { width: 1280, height: 720 },
+      });
+      localStreamRef.current = localStream;
+
+      if (localVideoRef.current) {
+        localVideoRef.current.srcObject = localStream;
+      }
+
+      const pc = createPeerConnection();
+      localStream.getTracks().forEach((track) => {
+        pc.addTrack(track, localStream);
+      });
+      peerRef.current = pc;
+
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+
+      socket.emit("call:offer", {
+        receiverId: otherUser._id,
+        from: user._id,
+        chatId: activeChat._id,
+        sdp: offer,
+        type: "video",
       });
     } catch (error) {
       console.error("Failed to start call:", error);
@@ -729,7 +903,8 @@ const Chat = ({ courseId, instructorId, triggerButton }) => {
     if (!socket || !incomingCall) return;
 
     try {
-      const { from, chatId, sdp } = incomingCall;
+      const { from, chatId, sdp, type } = incomingCall;
+
       const chat =
         chatsRef.current.find((c) => c._id === chatId) || activeChat;
       if (!chat) return;
@@ -738,10 +913,21 @@ const Chat = ({ courseId, instructorId, triggerButton }) => {
       setIsCalling(false);
       setIsMuted(false);
 
-      const localStream = await navigator.mediaDevices.getUserMedia({
-        audio: true,
-      });
+      const isAudioOnly = type !== "video";
+      const nextCallType = isAudioOnly ? "audio" : "video";
+      setCallType(nextCallType);
+      setIsVideoPanelOpen(nextCallType === "video");
+
+      const localStream = await navigator.mediaDevices.getUserMedia(
+        isAudioOnly
+          ? { audio: true }
+          : { audio: true, video: { width: 1280, height: 720 } }
+      );
       localStreamRef.current = localStream;
+
+      if (!isAudioOnly && localVideoRef.current) {
+        localVideoRef.current.srcObject = localStream;
+      }
 
       const pc = createPeerConnection();
       localStream.getTracks().forEach((track) => {
@@ -872,7 +1058,14 @@ const Chat = ({ courseId, instructorId, triggerButton }) => {
                       ? activeChat.instructor?.name
                       : activeChat.student?.name}
                   </div>
-                  <div style={{ display: "flex", alignItems: "center", color: "#7f8c8d", fontSize: 12 }}>
+                  <div
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      color: "#7f8c8d",
+                      fontSize: 12,
+                    }}
+                  >
                     <div
                       style={{
                         width: 8,
@@ -907,15 +1100,23 @@ const Chat = ({ courseId, instructorId, triggerButton }) => {
               >
                 <Button
                   icon={<VideoCameraOutlined />}
-                  onClick={() => setIsVideoPanelOpen((prev) => !prev)}
-                  disabled={!isOnline}
+                  onClick={() => {
+                    if (!socket || !isOnline) return;
+
+                    if (isCalling || inCall) {
+                      endCall();
+                    } else {
+                      startCall();
+                    }
+                  }}
+                  disabled={!socket || !isOnline}
                 >
-                  {isVideoPanelOpen ? "Hide Video" : "Video"}
+                  {isCalling || inCall ? "End Video" : "Video Call"}
                 </Button>
                 <Button
                   type="primary"
                   icon={<PhoneOutlined />}
-                  onClick={startCall}
+                  onClick={startAudioCall}
                   disabled={!isOnline || !socket || isCalling || inCall}
                   style={{ marginRight: 8 }}
                 >
@@ -1086,7 +1287,7 @@ const Chat = ({ courseId, instructorId, triggerButton }) => {
                     style={{ display: "none" }}
                   />
 
-                  {isVideoPanelOpen && (
+                  {callType === "video" && isVideoPanelOpen && (
                     <div
                       style={{
                         padding: "8px 16px 0",
@@ -1105,36 +1306,45 @@ const Chat = ({ courseId, instructorId, triggerButton }) => {
                         <div
                           style={{
                             flex: "1 1 160px",
-                            minHeight: 120,
+                            minHeight: 160,
                             borderRadius: 8,
-                            background:
-                              "radial-gradient(circle at top left, #e3f2fd, #bbdefb)",
-                            display: "flex",
-                            alignItems: "center",
-                            justifyContent: "center",
-                            color: "#1f2933",
-                            fontSize: 12,
-                            fontWeight: 500,
+                            overflow: "hidden",
+                            backgroundColor: "#000",
                           }}
                         >
-                          Your video
+                          <video
+                            ref={localVideoRef}
+                            autoPlay
+                            muted
+                            playsInline
+                            style={{
+                              width: "100%",
+                              height: "100%",
+                              objectFit: "cover",
+                              backgroundColor: "#000",
+                            }}
+                          />
                         </div>
                         <div
                           style={{
                             flex: "1 1 160px",
-                            minHeight: 120,
+                            minHeight: 160,
                             borderRadius: 8,
-                            background:
-                              "radial-gradient(circle at bottom right, #ffe0b2, #ffcc80)",
-                            display: "flex",
-                            alignItems: "center",
-                            justifyContent: "center",
-                            color: "#4b1f00",
-                            fontSize: 12,
-                            fontWeight: 500,
+                            overflow: "hidden",
+                            backgroundColor: "#000",
                           }}
                         >
-                          Participant video
+                          <video
+                            ref={remoteVideoRef}
+                            autoPlay
+                            playsInline
+                            style={{
+                              width: "100%",
+                              height: "100%",
+                              objectFit: "cover",
+                              backgroundColor: "#000",
+                            }}
+                          />
                         </div>
                       </div>
                       <div
@@ -1147,18 +1357,22 @@ const Chat = ({ courseId, instructorId, triggerButton }) => {
                       >
                         <Button
                           size="small"
-                          icon={<AudioMutedOutlined />}
-                          disabled
+                          icon={
+                            isMuted ? <AudioMutedOutlined /> : <AudioOutlined />
+                          }
+                          onClick={toggleMute}
+                          disabled={!inCall}
                         >
-                          Mute
+                          {isMuted ? "Unmute" : "Mute"}
                         </Button>
                         <Button
                           size="small"
                           danger
                           icon={<CloseOutlined />}
-                          onClick={() => setIsVideoPanelOpen(false)}
+                          onClick={endCall}
+                          disabled={!inCall && !isCalling}
                         >
-                          End
+                          End Call
                         </Button>
                       </div>
                     </div>
@@ -1218,8 +1432,46 @@ const Chat = ({ courseId, instructorId, triggerButton }) => {
                         style={{ fontSize: 12, color: "#2c3e50" }}
                       >
                         {isCalling ? "Calling..." : "In call"}
+                        {iceConnectionState && (
+                          <span
+                            style={{
+                              marginLeft: 8,
+                              fontSize: 11,
+                              color: "#7f8c8d",
+                            }}
+                          >
+                            {`(Connection: ${iceConnectionState})`}
+                          </span>
+                        )}
                       </span>
-                      <div style={{ display: "flex", gap: 8 }}>
+
+                      <div
+                        style={{
+                          display: "flex",
+                          gap: 8,
+                          alignItems: "center",
+                        }}
+                      >
+                        <div
+                          style={{
+                            width: 80,
+                            height: 6,
+                            borderRadius: 4,
+                            backgroundColor: "#ecf0f1",
+                            overflow: "hidden",
+                          }}
+                        >
+                          <div
+                            style={{
+                              width: `${Math.round(
+                                remoteAudioLevel * 100
+                              )}%`,
+                              height: "100%",
+                              backgroundColor: "#2ecc71",
+                              transition: "width 0.1s linear",
+                            }}
+                          />
+                        </div>
                         <Button
                           size="small"
                           icon={
