@@ -9,20 +9,28 @@ import { Button } from "@/components/ui/button";
 
 const SearchPage = () => {
   const [searchParams] = useSearchParams();
-  const query = searchParams.get("query")||"/";
+  const query = searchParams.get("query") || "/";
   const [selectedCategories, setSelectedCatgories] = useState([]);
   const [sortByPrice, setSortByPrice] = useState("");
 
   const { data, isLoading, error } = useGetSearchCourseQuery({
-    searchQuery:query,
-    categories:selectedCategories,
-    sortByPrice
+    searchQuery: query,
+    categories: selectedCategories,
+    sortByPrice,
   });
 
   // Handle the AI search response format
   const courses = data?.data?.courses || [];
   const totalResults = data?.data?.totalResults || 0;
   const insights = data?.data?.insights || {};
+  const isGenericSearch = query === "/";
+  const headingText = isGenericSearch
+    ? totalResults > 0
+      ? `${totalResults} courses available`
+      : "Explore our courses"
+    : totalResults > 0
+    ? `Found ${totalResults} results for "${query}"`
+    : `Results for "${query}"`;
   const isEmpty = !isLoading && courses.length === 0;
 
   const handleFilterChange = (categories, price) => {
@@ -33,10 +41,14 @@ const SearchPage = () => {
     <div className="max-w-7xl mx-auto p-4 md:p-8">
       <div className="my-6">
         <h1 className="font-bold text-xl md:text-2xl">
-          {totalResults > 0 ? `Found ${totalResults} results for "${query}"` : `Results for "${query}"`}
+          {headingText}
         </h1>
         <p>
-          {insights.summary ? insights.summary : (
+          {insights.summary ? (
+            insights.summary
+          ) : isGenericSearch ? (
+            <>Browse our curated catalogue of courses.</>
+          ) : (
             <>Showing results for <span className="text-blue-800 font-bold italic">{query}</span></>
           )}
         </p>
